@@ -10,3 +10,6 @@
 ## 1.0.2
 
 - Fix: README.md
+## 1.0.3
+
+- Change icon
