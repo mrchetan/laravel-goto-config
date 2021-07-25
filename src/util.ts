@@ -68,12 +68,12 @@ async function getData(text) {
 
         if (url != undefined) {
             let file = `${path}${sep}${url}`
-
+            let fileUri = Uri
+            .parse(`${editor}${ws}${sep}${file}`)
+            .with({ authority: 'mrchetan.laravel-goto-config', path:'/'+`${ws}${sep}${file}`,  query: keyName });
             result.push({
                 tooltip : `${val} (${file})`,
-                fileUri : Uri
-                    .parse(`${editor}${ws}${sep}${file}`)
-                    .with({ authority: 'mrchetan.laravel-goto-config', path:'/'+`${ws}${sep}${file}`,  query: keyName })
+                fileUri : fileUri
             })
         } else {
             if (config.forceShowConfigLink) {
