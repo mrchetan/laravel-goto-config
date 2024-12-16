@@ -1,187 +1,201 @@
-'use strict'
-
+import escapeStringRegexp from 'escape-string-regexp';
+import { execaCommand } from 'execa';
+import glob from 'fast-glob';
+import * as path from 'node:path';
 import {
+    DocumentSymbol,
+    Selection,
+    TextEditorRevealType,
+    Uri,
+    WorkspaceConfiguration,
     commands,
     env,
-    Range,
-    Selection,
-    Uri,
     window,
-    workspace
-} from 'vscode'
+    workspace,
+} from 'vscode';
 
-const path = require('path')
-const sep  = path.sep
-const glob = require('fast-glob')
-const exec = require('await-exec')
+export const CMND_NAME = 'lgcnf.openFile';
 
-let ws
+const sep = path.sep;
+const SCHEME = `command:${CMND_NAME}`;
+const PKG_LABEL = 'Laravel Goto Config';
+const outputChannel = window.createOutputChannel(PKG_LABEL, 'log');
+let ws;
 
 export function setWs(uri) {
-    ws = workspace.getWorkspaceFolder(uri)?.uri.fsPath
+    ws = workspace.getWorkspaceFolder(uri)?.uri.fsPath;
 }
 
 /* -------------------------------------------------------------------------- */
 
-let cache_store_link = []
+const cache_store_link = [];
 
 export async function getFilePaths(text) {
-    text = text.replace(/['"]/g, '')
+    text = text.replace(/['"]/g, '');
 
     if (text.endsWith('.')) {
-        return []
+        return [];
     }
 
-    let cache_key = text
-    let list      = checkCache(cache_store_link, cache_key)
+    const cache_key = text;
+    let list = checkCache(cache_store_link, cache_key);
 
     if (!list.length) {
-        list = await getData(text)
+        list = await getData(text);
 
         if (list.length) {
-            saveCache(cache_store_link, cache_key, list)
+            saveCache(cache_store_link, cache_key, list);
         }
     }
 
-    return list
+    return list;
 }
 
 async function getData(text) {
-    let fileList = text.split('.')
-    let keyName  = fileList.pop()
+    const fileList = text.split('.');
+    const paths = config.folders;
 
-    let paths  = config.folders
-    let editor = `${env.uriScheme}://file`
-
-    let toCheck = []
+    const toCheck = [];
     while (fileList.length > 0) {
-        toCheck.push(`**/${fileList.join(sep)}.php`)
-        fileList.pop()
+        toCheck.push(`**/${fileList.join(sep)}.php`);
+        fileList.pop();
     }
 
-    let result = []
+    const result = [];
 
     for (const path of paths) {
-        let urls = await glob(toCheck, {cwd: `${ws}${sep}${path}`})
-        let url  = urls[0]
-        let val  = await getConfigValue(text)
+        const urls = await glob(toCheck, { cwd: `${ws}${sep}${path}` });
+        const url = urls[0];
+        const val = await getConfigValue(text);
 
         if (url != undefined) {
-            let file = `${path}${sep}${url}`
-            let fileUri = Uri
-            .parse(`${editor}${ws}${sep}${file}`)
-            .with({ authority: 'mrchetan.laravel-goto-config', path:'/'+`${ws}${sep}${file}`,  query: keyName });
+            // because we dont know which is (a config key) & which is (the config file name)
+            const configFile = url.replace('.php', '');
+            const keyName = text.replace(text.match(`.*${configFile}\\.`), '');
+
+            const file = `${path}${sep}${url}`;
+            const args = prepareArgs({ path: normalizePath(`${ws}${sep}${file}`), query: keyName });
+
             result.push({
                 tooltip : `${val} (${file})`,
-                fileUri : fileUri
-            })
+                fileUri : Uri.parse(`${SCHEME}?${args}`),
+            });
         } else {
             if (config.forceShowConfigLink) {
                 result.push({
                     tooltip : val,
-                    fileUri : null
-                })
+                    fileUri : null,
+                });
             }
         }
     }
 
-    return result
+    return result;
+}
+
+
+function prepareArgs(args: object) {
+    return encodeURIComponent(JSON.stringify([args]));
+}
+
+function normalizePath(path) {
+    return path
+        .replace(/\/+/g, '/')
+        .replace(/\+/g, '\\');
 }
 
 /* Tinker ------------------------------------------------------------------- */
-let counter = 1
+let counter = 1;
 
 async function getConfigValue(key) {
-    let timer
+    let timer;
 
     try {
-        let res = await exec(`php artisan tinker --execute="echo json_encode(config('${key}'))"`, {
+        const { stdout } = await execaCommand(`${config.phpCommand} tinker --execute="echo json_encode(config('${key}'))"`, {
             cwd   : ws,
-            shell : env.shell
-        })
+            shell : env.shell,
+        });
 
-        return res.stdout.replace(/<.*/, '').trim().replace(/['"]/g, '')
+        return stdout;
     } catch (error) {
         // console.error(error)
 
         if (counter >= 3) {
-            return clearTimeout(timer)
+            outputChannel.replace(error.message);
+            // outputChannel.show();
+
+            return clearTimeout(timer);
         }
 
         timer = setTimeout(() => {
-            counter++
-            getConfigValue(key)
-        }, 2000)
+            counter++;
+            getConfigValue(key);
+        }, 2000);
     }
 }
 
 /* Scroll ------------------------------------------------------------------- */
-export function scrollToText() {
-    window.registerUriHandler({
-        handleUri(provider) {
-            let {authority, path, query} = provider
+export function scrollToText(args) {
+    if (args !== undefined) {
+        let { path, query } = args;
 
-            if (authority == 'mrchetan.laravel-goto-config') {
-                commands.executeCommand('vscode.openFolder', Uri.file(path))
-                    .then(() => {
-                        setTimeout(() => {
-                            let editor = window.activeTextEditor
-                            let range  = getTextPosition(query, editor.document)
+        commands.executeCommand('vscode.open', Uri.file(path)).then(async () => {
+            const editor = window.activeTextEditor;
 
-                            if (range) {
-                                editor.selection = new Selection(range.start, range.end)
-                                editor.revealRange(range, 3)
-                            }
+            const symbols: DocumentSymbol[] = await commands.executeCommand('vscode.executeDocumentSymbolProvider', editor.document.uri);
+            let range: any;
+            query = query.split('.');
 
-                            if (!range && query) {
-                                window.showInformationMessage(
-                                    'Laravel Goto Config: Copy Key To Clipboard',
-                                    ...['Copy']
-                                ).then((e) => {
-                                    if (e) {
-                                        env.clipboard.writeText(`'${query}'`)
-                                    }
-                                })
-                            }
-                        }, 500)
-                    })
+            if (query.length > 1) {
+                range = getRange(symbols, query);
+            } else {
+                range = symbols.find((symbol) => symbol.name == query)?.location.range;
             }
-        }
-    })
+
+            if (range) {
+                editor.selection = new Selection(range.start, range.end);
+                editor.revealRange(range, TextEditorRevealType.InCenter);
+            }
+
+            if (!range && query) {
+                window.showInformationMessage(
+                    `${PKG_LABEL}: Copy Key To Clipboard`,
+                    ...['Copy'],
+                ).then((e) => {
+                    if (e) {
+                        env.clipboard.writeText(`'${query}'`);
+                    }
+                });
+            }
+        });
+    }
 }
 
-function getTextPosition(searchFor, doc) {
-    let txt   = doc.getText()
-    let arr   = searchFor.split('.')
-    let last  = arr[arr.length - 1]
-    let regex = ''
-    let match
+function getRange(symbolsList: Array<any>, keysArray: string[]): any {
+    let key: any = null;
 
-    if (searchFor.includes('.')) {
-        for (const item of arr) {
-            regex += item == last
-                ? `${item}.*=>`
-                : `['"]${item}.*\\[([\\S\\s]*?)`
+    while (keysArray.length) {
+        key = keysArray.shift();
+        const node = symbolsList.find((symbol: any) => symbol.name === key);
+
+        if (node) {
+            if (node.children && keysArray.length) {
+                return getRange(node.children, keysArray);
+            }
+
+            return node.location.range;
         }
 
-        match = new RegExp(regex).exec(txt)
-    } else {
-        match = new RegExp(`['"]${searchFor}['"].*=>`).exec(txt)
-    }
-
-    if (match) {
-        let pos = doc.positionAt(match.index + match[0].length)
-
-        return new Range(pos, pos)
+        break;
     }
 }
 
 /* Helpers ------------------------------------------------------------------ */
 
 function checkCache(cache_store, text) {
-    let check = cache_store.find((e) => e.key == text)
+    const check = cache_store.find((e) => e.key == text);
 
-    return check ? check.val : []
+    return check ? check.val : [];
 }
 
 function saveCache(cache_store, text, val) {
@@ -189,19 +203,18 @@ function saveCache(cache_store, text, val) {
         ? false
         : cache_store.push({
             key : text,
-            val : val
-        })
+            val : val,
+        });
 
-    return val
+    return val;
 }
 
 /* Config ------------------------------------------------------------------- */
-const escapeStringRegexp = require('escape-string-regexp')
-export const PACKAGE_NAME = 'laravelGotoConfig'
-export let config: any = {}
-export let methods: any = ''
+export const PACKAGE_NAME = 'laravelGotoConfig';
+export let config: WorkspaceConfiguration;
+export let methods: any = '';
 
 export function readConfig() {
-    config  = workspace.getConfiguration(PACKAGE_NAME)
-    methods = config.methods.map((e) => escapeStringRegexp(e)).join('|')
+    config = workspace.getConfiguration(PACKAGE_NAME);
+    methods = config.methods.map((e) => escapeStringRegexp(e)).join('|');
 }
