@@ -1,5 +1,7 @@
 # Laravel Goto Config
 
+> This extension is not lognger get update use [Laravel Offical extension](https://marketplace.visualstudio.com/items?itemName=laravel.vscode-laravel)
+
 Package by default search in `root/config` only, blame laravel for not having vendors for config as `lang & view`
 
 ## Features
